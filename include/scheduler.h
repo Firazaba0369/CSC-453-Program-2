@@ -5,6 +5,7 @@
 #include <pthread.h>
 
 #define JOB_ID_MAX 16
+#define MAX_JOBS 1024
 
 typedef enum {
     JOB_NEW = 0,
@@ -59,5 +60,6 @@ const char *policy_name(sched_policy_t policy);
 int parse_policy(const char *s, sched_policy_t *policy);
 int parse_args(int argc, char **argv, sim_config_t *cfg);
 void print_usage(FILE *fp, const char *progname);
+int parse_jobs(const char *input_path, workload_t *wl);
 
 #endif

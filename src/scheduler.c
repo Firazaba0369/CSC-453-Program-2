@@ -1,4 +1,8 @@
 #include <stdio.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 #include "scheduler.h"
 
@@ -11,6 +15,21 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
             "- implement FCFS for --cpus 1\n"
             "- add SJF, SRTF, and RR\n"
             "- verify trace and stats output\n");
+
+    // Initialize then parse jobs
+    workload_t wl = {0};
+    wl.jobs = calloc(MAX_JOBS, sizeof(job_t));
+    if(parse_jobs(cfg->input_path, &wl) != 0) {
+        fprintf(stderr, "Error parsing jobs\n");
+        return -1;
+    }
+
+    // Implement FCFS, RR scheduling - Franky
+
+    // Implemement SJF, SRTF scheduling - Brandon
+
+    // Verify trace and stats output - Franky
+
     return -1;
 }
 

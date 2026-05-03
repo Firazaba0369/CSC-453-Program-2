@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <stdint.h>
 
 #include "scheduler.h"
 
@@ -68,6 +70,56 @@ int parse_args(int argc, char **argv, sim_config_t *cfg) {
     if (cfg->policy != POLICY_RR && cfg->quantum < 0) return -1;
     if (cfg->cpus <= 0) return -1;
 
+    return 0;
+}
+
+int parse_jobs(const char *input_path, workload_t *wl){
+    FILE *fp = fopen(input_path, "r");
+    if(fp ==  NULL){
+        perror("Could not open file");
+        return -1;
+    }
+
+    // Read line by line until end of file
+    char buffer[100];
+    while(fgets(buffer, sizeof(buffer), fp) != NULL) {
+        buffer[strcspn(buffer, "\n")] = '\0'; 
+
+        // Check if comment line or blank
+        if(buffer[0] == '#' || buffer[0] == '\0') continue;
+
+        // Check if workload job limit is reached
+        if (wl->njobs >= MAX_JOBS) {
+            fprintf(stderr, "Too many jobs\n");
+            fclose(fp);
+            return -1;
+        }
+
+        // Parse the line for job description
+        char *job_tokens[4];
+        char *token = strtok(buffer, " ");
+        uint8_t i = 0;
+        while(token != NULL && i < 4) {
+            job_tokens[i] = token;
+            i++;
+            token = strtok(NULL, " ");
+        }
+
+        // Validate job description format
+        if (i != 4 || token != NULL){
+            fprintf(stderr, "Invalid job description format\n");
+            continue;
+        }
+
+        // Store job description in workload jobs
+        strncpy(wl->jobs[wl->njobs].id, job_tokens[0], sizeof(wl->jobs[wl->njobs].id) - 1);
+        wl->jobs[wl->njobs].id[sizeof(wl->jobs[wl->njobs].id) - 1] = '\0';
+        wl->jobs[wl->njobs].arrival_time = atoi(job_tokens[1]);
+        wl->jobs[wl->njobs].priority = atoi(job_tokens[2]);
+        wl->jobs[wl->njobs].total_time = atoi(job_tokens[3]);
+        wl->njobs++;
+    }
+    fclose(fp);
     return 0;
 }
 
