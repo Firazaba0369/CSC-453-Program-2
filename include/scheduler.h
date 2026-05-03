@@ -54,6 +54,12 @@ typedef struct {
     int njobs;
 } workload_t;
 
+typedef struct {
+    job_t *data[1024];
+    int front;
+    int back;
+} queue_t;
+
 int run_scheduler_single_cpu(const sim_config_t *cfg);
 int run_scheduler_multi_cpu(const sim_config_t *cfg);
 const char *policy_name(sched_policy_t policy);
@@ -61,5 +67,7 @@ int parse_policy(const char *s, sched_policy_t *policy);
 int parse_args(int argc, char **argv, sim_config_t *cfg);
 void print_usage(FILE *fp, const char *progname);
 int parse_jobs(const char *input_path, workload_t *wl);
+void dump_stats(workload_t *wl, FILE *stats_fp);
+int fcfs(sim_config_t *cfg, workload_t *wl);
 
 #endif

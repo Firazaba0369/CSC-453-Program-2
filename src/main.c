@@ -112,11 +112,13 @@ int parse_jobs(const char *input_path, workload_t *wl){
         }
 
         // Store job description in workload jobs
-        strncpy(wl->jobs[wl->njobs].id, job_tokens[0], sizeof(wl->jobs[wl->njobs].id) - 1);
-        wl->jobs[wl->njobs].id[sizeof(wl->jobs[wl->njobs].id) - 1] = '\0';
-        wl->jobs[wl->njobs].arrival_time = atoi(job_tokens[1]);
-        wl->jobs[wl->njobs].priority = atoi(job_tokens[2]);
-        wl->jobs[wl->njobs].total_time = atoi(job_tokens[3]);
+        job_t *job = &wl->jobs[wl->njobs];
+        strncpy(job->id, job_tokens[0], sizeof(job->id) - 1);
+        job->id[sizeof(job->id) - 1] = '\0';
+        job->arrival_time = atoi(job_tokens[1]);
+        job->priority = atoi(job_tokens[2]);
+        job->total_time = atoi(job_tokens[3]);
+        job->remaining_time = job->total_time;
         wl->njobs++;
     }
     fclose(fp);
