@@ -68,6 +68,6 @@ int parse_args(int argc, char **argv, sim_config_t *cfg);
 void print_usage(FILE *fp, const char *progname);
 int parse_jobs(const char *input_path, workload_t *wl);
 void dump_stats(workload_t *wl, FILE *stats_fp);
-int fcfs(sim_config_t *cfg, workload_t *wl);
+int fcfs(const sim_config_t *cfg, workload_t *wl);
 
 #endif

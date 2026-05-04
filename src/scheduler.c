@@ -40,7 +40,7 @@ void dump_stats(workload_t *wl, FILE *stats_fp){
     return;
 }
 
-int fcfs(sim_config_t *cfg, workload_t *wl){
+int fcfs(const sim_config_t *cfg, workload_t *wl){
     FILE *trace_fp = stdout;
     FILE *stats_fp = stdout;
 
@@ -132,6 +132,123 @@ int fcfs(sim_config_t *cfg, workload_t *wl){
     return 0;   
 }
 
+int RR(const sim_config_t *cfg, workload_t *wl){
+    FILE *trace_fp = stdout;
+    FILE *stats_fp = stdout;
+
+    // Output trace to file path when provided
+    if (cfg->trace_path != NULL){
+        trace_fp = fopen(cfg->trace_path,"w");
+        if(trace_fp == NULL){
+            perror("Couldn't open trace file");
+            return -1;
+        }
+    }
+
+    // Output stats to file path when provided
+    if (cfg->stats_path != NULL){
+        stats_fp = fopen(cfg->stats_path, "w");
+        if (stats_fp == NULL) {
+            if (cfg->trace_path != NULL) fclose(trace_fp);
+            perror("Couldn't open stats file");
+            return -1;
+        }
+    }
+
+    int tick = 0;
+    int completed_jobs = 0;
+    int total_jobs = wl->njobs;
+    queue_t rq = {0}; //ready queue
+    job_t *cpu_job = NULL; //job currently running on CPU
+    // Run until all jobs have completed
+    while (completed_jobs < total_jobs) {
+
+        // Admit jobs to the ready queue when their arrival time is reached 
+        for(int i = 0; i < wl->njobs; i++){
+            job_t *job = &wl->jobs[i];
+            if(job->state == JOB_NEW && job->arrival_time == tick){
+                job->state = JOB_READY;
+                job->ready_enqueue_time = tick;
+                if (rq.back - rq.front >= MAX_JOBS) {
+                    fprintf(stderr, "Ready queue overflow\n");
+                    if (cfg->trace_path != NULL) fclose(trace_fp);
+                    if (cfg->stats_path != NULL) fclose(stats_fp);
+                    return -1;
+                }
+                rq.data[rq.back++] = job; //enqueue
+                fprintf(trace_fp, "%d ARRIVE %s\n", tick, job->id); 
+            }
+        }
+
+        // Dispatch when CPU is idle and ready queue isn't empty
+        if(cpu_job == NULL && rq.front != rq.back){
+            cpu_job = rq.data[rq.front++]; // Dispatch and dequeue
+            if (rq.front == rq.back) {
+                rq.front = 0;
+                rq.back = 0;
+            }
+            cpu_job->rr_ticks_used = 0;
+            cpu_job->total_wait_time += tick - cpu_job->ready_enqueue_time;
+            cpu_job->state = JOB_RUNNING;
+            if (!cpu_job->started) {
+                cpu_job->first_run_time = tick;
+                cpu_job->started = 1;
+            }
+            fprintf(trace_fp, "%d DISPATCH %s\n", tick, cpu_job->id); 
+        }
+
+        // Execute job
+        if (cpu_job != NULL) {
+            cpu_job->remaining_time--;
+            cpu_job->rr_ticks_used++;
+            if(cpu_job->remaining_time == 0){   
+                cpu_job->completion_time = tick;
+                fprintf(trace_fp, "%d COMPLETE %s\n", tick, cpu_job->id);
+                completed_jobs++;
+                cpu_job->state = JOB_DONE;
+                cpu_job = NULL;
+            }
+        }
+
+        // Preempt if quantum expired
+        if (cpu_job != NULL &&
+            cpu_job->remaining_time > 0 &&   // don’t preempt if it just finished
+            cpu_job->rr_ticks_used >= cfg->quantum &&
+            rq.front != rq.back) {
+
+            fprintf(trace_fp, "%d PREEMPT %s\n", tick, cpu_job->id);
+
+            cpu_job->state = JOB_READY;
+            cpu_job->ready_enqueue_time = tick + 1; // RR rule
+            cpu_job->rr_ticks_used = 0;
+            
+            if (rq.back - rq.front >= MAX_JOBS) {
+                fprintf(stderr, "Ready queue overflow\n");
+                if (cfg->trace_path != NULL) fclose(trace_fp);
+                if (cfg->stats_path != NULL) fclose(stats_fp);
+                return -1;
+            }
+            rq.data[rq.back++] = cpu_job; //enqueue
+            cpu_job = NULL;
+
+        }
+    
+        tick++;
+    }
+
+    // Finish trace write and close
+    fprintf(trace_fp, "END\n");
+
+    // Write stats 
+    dump_stats(wl, stats_fp);
+
+    // Close files if not writing to stdout
+    if (cfg->trace_path != NULL) fclose(trace_fp);
+    if (cfg->stats_path != NULL) fclose(stats_fp);
+
+    return 0;   
+}
+
 int run_scheduler_single_cpu(const sim_config_t *cfg) {
     (void)cfg;
     // fprintf(stderr,
@@ -155,11 +272,11 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
         return -1;
     }
 
-    // Remove this later but used to show jobs after parsing
-    for (int i = 0; i < wl.njobs; i++) {
-        printf("Job %s: arrival=%d priority=%d total_time=%d\n",
-               wl.jobs[i].id, wl.jobs[i].arrival_time, wl.jobs[i].priority, wl.jobs[i].total_time);
-    }
+    // // Remove this later but used to show jobs after parsing
+    // for (int i = 0; i < wl.njobs; i++) {
+    //     printf("Job %s: arrival=%d priority=%d total_time=%d\n",
+    //            wl.jobs[i].id, wl.jobs[i].arrival_time, wl.jobs[i].priority, wl.jobs[i].total_time);
+    // }
 
     int result = 0;
     // Print starting message at tick 0
@@ -173,6 +290,7 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
     // RR scheduling
     else if (strcmp(policy_name(cfg->policy),"RR") == 0){
         // Implement RR scheduling - Franky
+        result = RR(cfg, &wl);
     }
 
     // SJF scheduling
