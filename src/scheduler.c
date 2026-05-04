@@ -221,7 +221,7 @@ int RR(const sim_config_t *cfg, workload_t *wl){
             cpu_job->state = JOB_READY;
             cpu_job->ready_enqueue_time = tick + 1; // RR rule
             cpu_job->rr_ticks_used = 0;
-            
+
             if (rq.back - rq.front >= MAX_JOBS) {
                 fprintf(stderr, "Ready queue overflow\n");
                 if (cfg->trace_path != NULL) fclose(trace_fp);
@@ -289,7 +289,6 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
 
     // RR scheduling
     else if (strcmp(policy_name(cfg->policy),"RR") == 0){
-        // Implement RR scheduling - Franky
         result = RR(cfg, &wl);
     }
 
