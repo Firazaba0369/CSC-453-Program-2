@@ -60,6 +60,36 @@ typedef struct {
     int back;
 } queue_t;
 
+typedef struct {
+    const sim_config_t *cfg;
+    workload_t *wl;
+
+    queue_t ready_queue;
+
+    job_t **cpu_jobs;        // array of size cfg->cpus
+                            // cpu_jobs[i] = job running on CPU i, or NULL
+
+    int completed_jobs;
+    int shutdown;
+
+    int tick;
+
+    int workers_done;       // how many CPU workers finished this tick
+    int tick_active;        // scheduler sets this when workers should run
+
+    pthread_mutex_t mutex;
+    pthread_cond_t worker_cv;
+    pthread_cond_t scheduler_cv;
+
+    FILE *trace_fp;
+    FILE *stats_fp;
+} shared_t;
+
+typedef struct threadArgs {
+    shared_t *shared;
+    int thread_id;
+} threadArgs_t;
+
 int run_scheduler_single_cpu(const sim_config_t *cfg);
 int run_scheduler_multi_cpu(const sim_config_t *cfg);
 const char *policy_name(sched_policy_t policy);
@@ -69,5 +99,10 @@ void print_usage(FILE *fp, const char *progname);
 int parse_jobs(const char *input_path, workload_t *wl);
 void dump_stats(workload_t *wl, FILE *stats_fp);
 int fcfs(const sim_config_t *cfg, workload_t *wl);
+int RR(const sim_config_t *cfg, workload_t *wl);
+int sjf(const sim_config_t *cfg, workload_t *wl);
+int srtf(const sim_config_t *cfg, workload_t *wl);
+void *cpu_worker(void* arg);
+void *schedule_worker(void* arg);
 
 #endif

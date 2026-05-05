@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 #include "scheduler.h"
 
@@ -249,6 +250,24 @@ int RR(const sim_config_t *cfg, workload_t *wl){
     return 0;   
 }
 
+int sjf(sim_config_t *cfg, workload_t *wl){
+    // Implementation for SJF scheduling
+    return 0;
+}
+
+int srtf(sim_config_t *cfg, workload_t *wl){
+    // Implementation for SRTF scheduling
+    return 0;
+}
+
+void *cpu_worker(void *arg){
+
+}
+
+void *schedule_worker(void *arg){
+
+}
+
 int run_scheduler_single_cpu(const sim_config_t *cfg) {
     (void)cfg;
     // fprintf(stderr,
@@ -295,11 +314,13 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
     // SJF scheduling
     else if (strcmp(policy_name(cfg->policy),"SJF") == 0){
         // Implemement SJF scheduling - Brandon
+        result = sjf(cfg, &wl);
     }
 
     // SRTF scheduling
     else{
         // Implemement SRTF scheduling - Brandon
+        result = srtf(cfg, &wl);
     }
 
     // Verify trace and stats output - Franky & Brandon
@@ -317,8 +338,62 @@ int run_scheduler_multi_cpu(const sim_config_t *cfg) {
             "- create one scheduler thread and N CPU worker threads\n"
             "- protect shared state with mutexes\n"
             "- sleep on condition variables instead of busy waiting\n");
+
+    // Initialize workload then parse jobs
+    workload_t wl = {0};
+    wl.jobs = calloc(MAX_JOBS, sizeof(job_t));
+    if (wl.jobs == NULL) {
+        perror("calloc");
+        return -1;
+    }
+ 
+    if(parse_jobs(cfg->input_path, &wl) != 0) {
+        fprintf(stderr, "Error parsing jobs\n");
+        return -1;
+    }
     
     // Implement multi-CPU threaded scheduler - IDK
 
+    // Initialize and configure threads
+    pthread_t scheduler_thread;
+    pthread_t cpu_threads[cfg->cpus];
+    threadArgs_t args[cfg->cpus];
+    shared_t s = {0};
+
+    s.cfg = cfg;
+    s.wl = &wl;
+    s.cpu_jobs = calloc(cfg->cpus, sizeof(job_t *));
+    s.completed_jobs = 0;
+    s.shutdown = 0;
+    s.tick = 0;
+
+    pthread_mutex_init(&s.mutex, NULL);
+    pthread_cond_init(&s.worker_cv, NULL);
+    pthread_cond_init(&s.scheduler_cv, NULL);
+
+    // create CPU workers
+    for (int i = 0; i < cfg->cpus; i++) {
+        args[i].shared = &s;
+        args[i].thread_id = i;
+        pthread_create(&cpu_threads[i], NULL, cpu_worker, &args[i]);
+    }
+
+    // Create one scheduler
+    pthread_create(&scheduler_thread, NULL, schedule_worker, &s);
+
+    // Wait for scheduler to finish
+    pthread_join(scheduler_thread, NULL);
+
+    // Send shutdown signal
+    pthread_mutex_lock(&s.mutex);
+    s.shutdown = 1;
+    pthread_cond_broadcast(&s.worker_cv);
+    pthread_mutex_unlock(&s.mutex);
+
+    // Wait for cpu threads to finish
+    for (int i = 0; i < cfg->cpus; i++) {
+        pthread_join(cpu_threads[i], NULL);
+    }
+        
     return -1;
 }
