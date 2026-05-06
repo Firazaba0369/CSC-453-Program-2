@@ -16,3 +16,8 @@ src/%.o: src/%.c
 
 clean:
 	rm -f src/*.o scheduler_sim
+
+everything:
+	make clean
+	make all
+	python3 autograder/run_tests.py

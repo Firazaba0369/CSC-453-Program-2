@@ -250,13 +250,231 @@ int RR(const sim_config_t *cfg, workload_t *wl){
     return 0;   
 }
 
-int sjf(sim_config_t *cfg, workload_t *wl){
+int sjf(const sim_config_t *cfg, workload_t *wl){
     // Implementation for SJF scheduling
+    FILE *trace_fp = stdout;
+    FILE *stats_fp = stdout;
+
+    // Output trace to file path when provided
+    if (cfg->trace_path != NULL){
+        trace_fp = fopen(cfg->trace_path,"w");
+        if(trace_fp == NULL){
+            perror("Couldn't open trace file");
+            return -1;
+        }
+    }
+
+    // Output stats to file path when provided
+    if (cfg->stats_path != NULL){
+        stats_fp = fopen(cfg->stats_path, "w");
+        if (stats_fp == NULL) {
+            if (cfg->trace_path != NULL) fclose(trace_fp);
+            perror("Couldn't open stats file");
+            return -1;
+        }
+    }
+
+    int tick = 0;
+    int completed_jobs = 0;
+    int total_jobs = wl->njobs;
+
+    job_t *cpu_job = NULL;
+
+    // Run until all jobs have completed
+    while (completed_jobs < total_jobs) {
+
+        // Admit new arrival
+        for(int i = 0; i < wl->njobs; i++){
+            job_t *job = &wl->jobs[i];
+            if(job->state == JOB_NEW && job->arrival_time == tick){
+                job->state = JOB_READY;
+                job->ready_enqueue_time = tick;
+                fprintf(trace_fp, "%d ARRIVE %s\n", tick, job->id);
+            }
+        }
+
+        // if CPU is idle, dispatch the shortest job in ready state
+        if(cpu_job == NULL){
+            job_t *shortest_job = NULL;
+
+            for(int i = 0; i < wl->njobs; i++){
+                job_t *job = &wl->jobs[i];
+                
+                if (job->state != JOB_READY) continue;
+
+                if (shortest_job == NULL) {
+                    shortest_job = job;
+                    continue;
+                }
+
+                if (job->remaining_time < shortest_job->remaining_time) {
+                    shortest_job = job;
+                } else if (job->remaining_time == shortest_job->remaining_time) {
+                    if(job->arrival_time < shortest_job->arrival_time) {
+                        shortest_job = job;
+                    } else if (job->arrival_time == shortest_job->arrival_time) {
+                        if (job->priority > shortest_job->priority) {
+                            shortest_job = job;
+                        } else if (job->priority == shortest_job->priority) {
+                            if (strcmp(job->id, shortest_job->id) < 0) {
+                                shortest_job = job;
+                            } 
+                        }
+                    }
+                }
+            }
+            if(shortest_job != NULL){
+                cpu_job = shortest_job;
+                cpu_job->total_wait_time += tick - cpu_job->ready_enqueue_time;
+                cpu_job->state = JOB_RUNNING;
+                if (!cpu_job->started) {
+                    cpu_job->first_run_time = tick;
+                    cpu_job->started = 1;
+                }
+                fprintf(trace_fp, "%d DISPATCH %s\n", tick, cpu_job->id); 
+            }
+        }
+
+        // Execute job
+        if (cpu_job != NULL) {
+            cpu_job->remaining_time--;
+            if(cpu_job->remaining_time == 0){   
+                cpu_job->completion_time = tick;
+                fprintf(trace_fp, "%d COMPLETE %s\n", tick, cpu_job->id);
+                completed_jobs++;
+                cpu_job->state = JOB_DONE;
+                cpu_job = NULL;
+            }
+        }
+    
+        tick++;
+    }
+
+    // Finish trace write and close
+    fprintf(trace_fp, "END\n");
+
+    // Write stats 
+    dump_stats(wl, stats_fp);
+
+    // Close files if not writing to stdout
+    if (cfg->trace_path != NULL) fclose(trace_fp);
+    if (cfg->stats_path != NULL) fclose(stats_fp);
     return 0;
 }
 
-int srtf(sim_config_t *cfg, workload_t *wl){
+int srtf(const sim_config_t *cfg, workload_t *wl){
     // Implementation for SRTF scheduling
+    FILE *trace_fp = stdout;
+    FILE *stats_fp = stdout;
+
+    // Output trace to file path when provided
+    if (cfg->trace_path != NULL){
+        trace_fp = fopen(cfg->trace_path,"w");
+        if(trace_fp == NULL){
+            perror("Couldn't open trace file");
+            return -1;
+        }
+    }
+
+    // Output stats to file path when provided
+    if (cfg->stats_path != NULL){
+        stats_fp = fopen(cfg->stats_path, "w");
+        if (stats_fp == NULL) {
+            if (cfg->trace_path != NULL) fclose(trace_fp);
+            perror("Couldn't open stats file");
+            return -1;
+        }
+    }
+
+    int tick = 0;
+    int completed_jobs = 0;
+    int total_jobs = wl->njobs;
+
+    job_t *cpu_job = NULL;
+
+    // Run until all jobs have completed
+    while (completed_jobs < total_jobs) {
+
+        // Admit new arrival
+        for(int i = 0; i < wl->njobs; i++){
+            job_t *job = &wl->jobs[i];
+            if(job->state == JOB_NEW && job->arrival_time == tick){
+                job->state = JOB_READY;
+                job->ready_enqueue_time = tick;
+                fprintf(trace_fp, "%d ARRIVE %s\n", tick, job->id);
+            }
+        }
+
+        // select best job every tick
+        job_t *shortest_job = NULL;
+        for(int i = 0; i < wl->njobs; i++){
+            job_t *job = &wl->jobs[i];
+            
+            if(job->state != JOB_READY && job != cpu_job) continue;
+
+            if (shortest_job == NULL) {
+                shortest_job = job;
+                continue;
+            }
+
+            // tie breaking
+            if (job->remaining_time < shortest_job->remaining_time) {
+                shortest_job = job;
+            } else if (job->remaining_time == shortest_job->remaining_time) {
+                if (job->arrival_time < shortest_job->arrival_time) {
+                    shortest_job = job;
+                } else if (job->arrival_time == shortest_job->arrival_time) {
+                    if (job->priority > shortest_job->priority) {
+                        shortest_job = job;
+                    } else if (job->priority == shortest_job->priority) {
+                        if (strcmp(job->id, shortest_job->id) < 0) {
+                            shortest_job = job;
+                        } 
+                    }
+                }
+            }
+        }
+        if(shortest_job != cpu_job){
+            if (cpu_job != NULL) {
+                cpu_job->state = JOB_READY;
+                cpu_job->ready_enqueue_time = tick;
+                fprintf(trace_fp, "%d PREEMPT %s\n", tick, cpu_job->id);
+            }
+
+            cpu_job = shortest_job;
+            cpu_job->total_wait_time += tick - cpu_job->ready_enqueue_time;
+            cpu_job->state = JOB_RUNNING;
+            if (!cpu_job->started) {
+                cpu_job->first_run_time = tick;
+                cpu_job->started = 1;
+            }
+            fprintf(trace_fp, "%d DISPATCH %s\n", tick, cpu_job->id); 
+        }
+
+        // Execute job
+        if (cpu_job != NULL) {
+            cpu_job->remaining_time--;
+            if(cpu_job->remaining_time == 0){   
+                cpu_job->completion_time = tick;
+                fprintf(trace_fp, "%d COMPLETE %s\n", tick, cpu_job->id);
+                completed_jobs++;
+                cpu_job->state = JOB_DONE;
+                cpu_job = NULL;
+            }
+        }
+    
+        tick++;
+    }
+
+    // Finish trace write and close
+    fprintf(trace_fp, "END\n");
+
+    // Write stats 
+    dump_stats(wl, stats_fp);
+
+    // Close files if not writing to stdout
+    if (cfg->trace_path != NULL) fclose(trace_fp);
+    if (cfg->stats_path != NULL) fclose(stats_fp);
     return 0;
 }
 
@@ -299,7 +517,7 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
 
     int result = 0;
     // Print starting message at tick 0
-    printf("Starting simulation with policy %s\n", policy_name(cfg->policy));
+    // printf("Starting simulation with policy %s\n", policy_name(cfg->policy));
 
     // FCFS scheduling
     if (strcmp(policy_name(cfg->policy),"FCFS") == 0){
