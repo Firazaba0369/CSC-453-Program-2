@@ -35,8 +35,8 @@ void dump_stats(workload_t *wl, FILE *stats_fp){
         total_waiting_time += waiting_times[i];
     }
     fprintf(stats_fp, "AVG response %.2f turnaround %.2f waiting %.2f\n", 
-        (float)total_response_time / wl->njobs, (float)total_turnaround_time / wl->njobs, 
-        (float)total_waiting_time / wl->njobs);
+        (double)total_response_time / wl->njobs, (double)total_turnaround_time / wl->njobs, 
+        (double)total_waiting_time / wl->njobs);
 
     return;
 }
