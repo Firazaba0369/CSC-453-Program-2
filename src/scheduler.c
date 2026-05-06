@@ -478,23 +478,221 @@ int srtf(const sim_config_t *cfg, workload_t *wl){
     return 0;
 }
 
-void *cpu_worker(void *arg){
 
+static void rq_enqueue(queue_t *q, job_t *job) {
+    q->data[q->back++] = job;
 }
 
-void *schedule_worker(void *arg){
+static job_t *rq_dequeue(queue_t *q) {
+    if (q->front == q->back) return NULL;
+    job_t *j = q->data[q->front++];
+    if (q->front == q->back) {
+        q->front = q->back = 0;
+    }
+    return j;
+}
 
+static int rq_empty(queue_t *q) {
+    return q->front == q->back;
+}
+
+// Return 1 if a is strictly better than b under SJF/SRTF rules
+static int better_job(const job_t *a, const job_t *b) {
+    if (a->remaining_time != b->remaining_time)
+        return a->remaining_time < b->remaining_time;
+    if (a->arrival_time != b->arrival_time)
+        return a->arrival_time < b->arrival_time;
+    if (a->priority != b->priority)
+        return a->priority > b->priority;
+    return strcmp(a->id, b->id) < 0;
+}
+
+// Pop best job from ready queue for SJF/SRTF
+static job_t *rq_pop_best(queue_t *q) {
+    if (rq_empty(q)) return NULL;
+
+    int best_idx = q->front;
+    for (int i = q->front + 1; i < q->back; i++) {
+        if (better_job(q->data[i], q->data[best_idx])) {
+            best_idx = i;
+        }
+    }
+
+    job_t *best = q->data[best_idx];
+
+    for (int i = best_idx; i < q->back - 1; i++) {
+        q->data[i] = q->data[i + 1];
+    }
+    q->back--;
+    if (q->front == q->back) {
+        q->front = q->back = 0;
+    }
+
+    return best;
+}
+
+
+
+void *cpu_worker(void *arg) {
+    threadArgs_t *targ = (threadArgs_t *)arg;
+    shared_t *s = targ->shared;
+    int id = targ->thread_id;
+    int my_tick = 0;
+
+    pthread_mutex_lock(&s->mutex);
+
+    while (1) {
+        // Wait until scheduler starts a new tick or shuts down
+        while (my_tick == s->tick && !s->shutdown) {
+            pthread_cond_wait(&s->worker_cv, &s->mutex);
+        }
+
+        if (s->shutdown) {
+            pthread_mutex_unlock(&s->mutex);
+            return NULL;
+        }
+
+        // Take assigned work
+        job_t *job = s->cpu_jobs[id];
+        my_tick = s->tick;
+
+        pthread_mutex_unlock(&s->mutex);
+
+        if (job != NULL) {
+            job->remaining_time--;
+            job->rr_ticks_used++;
+        }
+
+        pthread_mutex_lock(&s->mutex);
+
+        // Update shared state and signal scheduler if last worker done
+        s->workers_done++;
+        if (s->workers_done == s->cfg->cpus) {
+            pthread_cond_signal(&s->scheduler_cv);
+        }
+
+        // Loop back - will sleep on worker_cv until next tick
+    }
+}
+
+void *schedule_worker(void *arg) {
+    shared_t *s = (shared_t *)arg;
+    const sim_config_t *cfg = s->cfg;
+    workload_t *wl = s->wl;
+    int total_jobs = wl->njobs;
+
+    pthread_mutex_lock(&s->mutex);
+
+    while (s->completed_jobs < total_jobs) {
+        int tick = s->tick;
+
+        /* 1. Admit arrivals */
+        for (int i = 0; i < wl->njobs; i++) {
+            job_t *job = &wl->jobs[i];
+            if (job->state == JOB_NEW && job->arrival_time == tick) {
+                job->state = JOB_READY;
+                job->ready_enqueue_time = tick;
+                rq_enqueue(&s->ready_queue, job);
+                fprintf(s->trace_fp, "%d ARRIVE %s\n", tick, job->id);
+            }
+        }
+
+        /* 2. SRTF preemption check (in CPU order) */
+        if (cfg->policy == POLICY_SRTF) {
+            for (int c = 0; c < cfg->cpus; c++) {
+                job_t *running = s->cpu_jobs[c];
+                if (running == NULL) continue;
+
+                job_t *best = NULL;
+                for (int i = s->ready_queue.front; i < s->ready_queue.back; i++) {
+                    job_t *cand = s->ready_queue.data[i];
+                    if (best == NULL || better_job(cand, best)) best = cand;
+                }
+
+                if (best != NULL && better_job(best, running)) {
+                    running->state = JOB_READY;
+                    running->ready_enqueue_time = tick;
+                    rq_enqueue(&s->ready_queue, running);
+                    fprintf(s->trace_fp, "%d PREEMPT CPU%d %s\n", tick, c, running->id);
+                    s->cpu_jobs[c] = NULL;
+                }
+            }
+        }
+
+        /* 3. Dispatch to idle CPUs (in CPU order) */
+        for (int c = 0; c < cfg->cpus; c++) {
+            if (s->cpu_jobs[c] != NULL) continue;
+            if (rq_empty(&s->ready_queue)) break;
+
+            job_t *job = (cfg->policy == POLICY_FCFS || cfg->policy == POLICY_RR)
+                         ? rq_dequeue(&s->ready_queue)
+                         : rq_pop_best(&s->ready_queue);
+
+            s->cpu_jobs[c] = job;
+            job->state = JOB_RUNNING;
+            job->total_wait_time += tick - job->ready_enqueue_time;
+            job->assigned_cpu = c;
+            if (!job->started) {
+                job->first_run_time = tick;
+                job->started = 1;
+            }
+            if (cfg->policy == POLICY_RR) job->rr_ticks_used = 0;
+
+            fprintf(s->trace_fp, "%d DISPATCH CPU%d %s\n", tick, c, job->id);
+        }
+
+        /* 4. Signal workers — incrementing tick is the signal */
+        s->workers_done = 0;
+        s->tick++;
+        pthread_cond_broadcast(&s->worker_cv); // wake all workers
+
+        /* 5. Wait for all workers to finish */
+        while (s->workers_done < cfg->cpus) {
+            pthread_cond_wait(&s->scheduler_cv, &s->mutex);
+        }
+        // All workers done — safe to read job fields now
+
+        /* 6. Process completions and RR quantum expiry (in CPU order) */
+        for (int c = 0; c < cfg->cpus; c++) {
+            job_t *job = s->cpu_jobs[c];
+            if (job == NULL) continue;
+
+            if (job->remaining_time == 0) {
+                job->completion_time = tick;
+                job->state = JOB_DONE;
+                fprintf(s->trace_fp, "%d COMPLETE CPU%d %s\n", tick, c, job->id);
+                s->cpu_jobs[c] = NULL;
+                s->completed_jobs++;
+                continue;
+            }
+
+            if (cfg->policy == POLICY_RR &&
+                job->rr_ticks_used >= cfg->quantum &&
+                !rq_empty(&s->ready_queue)) {
+                fprintf(s->trace_fp, "%d PREEMPT CPU%d %s\n", tick, c, job->id);
+                job->state = JOB_READY;
+                job->ready_enqueue_time = tick + 1;
+                job->rr_ticks_used = 0;
+                rq_enqueue(&s->ready_queue, job);
+                s->cpu_jobs[c] = NULL;
+            }
+        }
+        // tick already incremented in step 4
+    }
+
+    /* Shutdown */
+    s->shutdown = 1;
+    pthread_cond_broadcast(&s->worker_cv);
+    pthread_mutex_unlock(&s->mutex);
+
+    fprintf(s->trace_fp, "END\n");
+    dump_stats(wl, s->stats_fp);
+
+    return NULL;
 }
 
 int run_scheduler_single_cpu(const sim_config_t *cfg) {
     (void)cfg;
-    // fprintf(stderr,
-    //         "TODO: implement the single-CPU scheduler in src/scheduler.c\n"
-    //         "Suggested order:\n"
-    //         "- parse jobs in the format JOB_ID ARRIVAL PRIORITY CPU_TIME\n"
-    //         "- implement FCFS for --cpus 1\n"
-    //         "- add SJF, SRTF, and RR\n"
-    //         "- verify trace and stats output\n");
 
     // Initialize workload then parse jobs
     workload_t wl = {0};
@@ -509,15 +707,7 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
         return -1;
     }
 
-    // // Remove this later but used to show jobs after parsing
-    // for (int i = 0; i < wl.njobs; i++) {
-    //     printf("Job %s: arrival=%d priority=%d total_time=%d\n",
-    //            wl.jobs[i].id, wl.jobs[i].arrival_time, wl.jobs[i].priority, wl.jobs[i].total_time);
-    // }
-
     int result = 0;
-    // Print starting message at tick 0
-    // printf("Starting simulation with policy %s\n", policy_name(cfg->policy));
 
     // FCFS scheduling
     if (strcmp(policy_name(cfg->policy),"FCFS") == 0){
@@ -541,77 +731,134 @@ int run_scheduler_single_cpu(const sim_config_t *cfg) {
         result = srtf(cfg, &wl);
     }
 
-    // Verify trace and stats output - Franky & Brandon
-
     free(wl.jobs);
     return result;
 }
 
 int run_scheduler_multi_cpu(const sim_config_t *cfg) {
-    (void)cfg;
-    fprintf(stderr,
-            "TODO: implement the multi-CPU threaded scheduler in src/scheduler.c\n"
-            "Required behavior:\n"
-            "- preserve the single-CPU scheduling semantics\n"
-            "- create one scheduler thread and N CPU worker threads\n"
-            "- protect shared state with mutexes\n"
-            "- sleep on condition variables instead of busy waiting\n");
-
-    // Initialize workload then parse jobs
+    // Initialize workload and parse jobs
     workload_t wl = {0};
     wl.jobs = calloc(MAX_JOBS, sizeof(job_t));
     if (wl.jobs == NULL) {
         perror("calloc");
         return -1;
     }
- 
-    if(parse_jobs(cfg->input_path, &wl) != 0) {
+
+    if (parse_jobs(cfg->input_path, &wl) != 0) {
         fprintf(stderr, "Error parsing jobs\n");
+        free(wl.jobs);
         return -1;
     }
-    
-    // Implement multi-CPU threaded scheduler - IDK
 
-    // Initialize and configure threads
-    pthread_t scheduler_thread;
-    pthread_t cpu_threads[cfg->cpus];
-    threadArgs_t args[cfg->cpus];
+    // Initialize shared state
     shared_t s = {0};
-
     s.cfg = cfg;
     s.wl = &wl;
     s.cpu_jobs = calloc(cfg->cpus, sizeof(job_t *));
+    if (s.cpu_jobs == NULL) {
+        perror("calloc");
+        free(wl.jobs);
+        return -1;
+    }
     s.completed_jobs = 0;
     s.shutdown = 0;
     s.tick = 0;
+    s.workers_done = 0;
+    s.tick_active = 0;
 
+    // Open trace file
+    s.trace_fp = stdout;
+    if (cfg->trace_path != NULL) {
+        s.trace_fp = fopen(cfg->trace_path, "w");
+        if (s.trace_fp == NULL) {
+            perror("Couldn't open trace file");
+            free(wl.jobs);
+            free(s.cpu_jobs);
+            return -1;
+        }
+    }
+
+    // Open stats file
+    s.stats_fp = stdout;
+    if (cfg->stats_path != NULL) {
+        s.stats_fp = fopen(cfg->stats_path, "w");
+        if (s.stats_fp == NULL) {
+            perror("Couldn't open stats file");
+            if (cfg->trace_path != NULL) fclose(s.trace_fp);
+            free(wl.jobs);
+            free(s.cpu_jobs);
+            return -1;
+        }
+    }
+
+    // Initialize synchronization primitives
     pthread_mutex_init(&s.mutex, NULL);
     pthread_cond_init(&s.worker_cv, NULL);
     pthread_cond_init(&s.scheduler_cv, NULL);
 
-    // create CPU workers
+    // Create CPU worker threads
+    pthread_t cpu_threads[cfg->cpus];
+    threadArgs_t args[cfg->cpus];
     for (int i = 0; i < cfg->cpus; i++) {
         args[i].shared = &s;
         args[i].thread_id = i;
-        pthread_create(&cpu_threads[i], NULL, cpu_worker, &args[i]);
+        if (pthread_create(&cpu_threads[i], NULL, cpu_worker, &args[i]) != 0) {
+            perror("pthread_create cpu_worker");
+            // shutdown any already-created threads
+            pthread_mutex_lock(&s.mutex);
+            s.shutdown = 1;
+            pthread_cond_broadcast(&s.worker_cv);
+            pthread_mutex_unlock(&s.mutex);
+            for (int j = 0; j < i; j++) pthread_join(cpu_threads[j], NULL);
+            if (cfg->trace_path != NULL) fclose(s.trace_fp);
+            if (cfg->stats_path != NULL) fclose(s.stats_fp);
+            free(s.cpu_jobs);
+            free(wl.jobs);
+            return -1;
+        }
     }
 
-    // Create one scheduler
-    pthread_create(&scheduler_thread, NULL, schedule_worker, &s);
+    // Create scheduler thread
+    pthread_t scheduler_thread;
+    if (pthread_create(&scheduler_thread, NULL, schedule_worker, &s) != 0) {
+        perror("pthread_create schedule_worker");
+        pthread_mutex_lock(&s.mutex);
+        s.shutdown = 1;
+        pthread_cond_broadcast(&s.worker_cv);
+        pthread_mutex_unlock(&s.mutex);
+        for (int i = 0; i < cfg->cpus; i++) pthread_join(cpu_threads[i], NULL);
+        if (cfg->trace_path != NULL) fclose(s.trace_fp);
+        if (cfg->stats_path != NULL) fclose(s.stats_fp);
+        free(s.cpu_jobs);
+        free(wl.jobs);
+        return -1;
+    }
 
     // Wait for scheduler to finish
     pthread_join(scheduler_thread, NULL);
 
-    // Send shutdown signal
+    // Tell workers to shut down and wake them
     pthread_mutex_lock(&s.mutex);
     s.shutdown = 1;
     pthread_cond_broadcast(&s.worker_cv);
     pthread_mutex_unlock(&s.mutex);
 
-    // Wait for cpu threads to finish
+    // Wait for all CPU workers to finish
     for (int i = 0; i < cfg->cpus; i++) {
         pthread_join(cpu_threads[i], NULL);
     }
-        
-    return -1;
+
+    // Cleanup
+    pthread_mutex_destroy(&s.mutex);
+    pthread_cond_destroy(&s.worker_cv);
+    pthread_cond_destroy(&s.scheduler_cv);
+
+    if (cfg->trace_path != NULL) fclose(s.trace_fp);
+    if (cfg->stats_path != NULL) fclose(s.stats_fp);
+
+    free(s.cpu_jobs);
+    free(wl.jobs);
+
+    return 0;
+
 }
